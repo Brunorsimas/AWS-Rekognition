@@ -1,49 +1,75 @@
+from pathlib import Path
 import boto3
-import base64
-import requests
+from PIL import Image, ImageDraw
 
-# Configuração do cliente Rekognition
-rekognition = boto3.client('rekognition', region_name='us-east-1')
+# Cliente AWS Rekognition
+client = boto3.client("rekognition")
 
-# Caminho da imagem que será analisada
-image_path = 'path_to_your_image.jpg'
 
-# Leitura da imagem
-with open(image_path, 'rb') as img_file:
-    image_bytes = img_file.read()
+def get_path(file_name: str) -> str:
+    """Obtém o caminho completo para a imagem na pasta 'imagem'."""
+    return str(Path(__file__).parent / "imagem" / file_name)
 
-# Identificação do famoso
-response = rekognition.recognize_celebrities(Image={'Bytes': image_bytes})
 
-# Extraindo informações do famoso
-if response['CelebrityFaces']:
-    celebrity = response['CelebrityFaces'][0]  # Considerando a primeira celebridade identificada
-    name = celebrity['Name']
-    print(f"Celebridade identificada: {name}")
+def detect_celebrities(image_path: str):
+    """Usa o AWS Rekognition para identificar celebridades na imagem."""
+    with open(image_path, "rb") as img_file:
+        response = client.recognize_celebrities(Image={"Bytes": img_file.read()})
+    return response
 
-    # Gerar uma imagem relacionada com a celebridade usando DALL-E
-    dalle_api_url = "https://api.openai.com/v1/images/generations"
-    api_key = "your_openai_api_key"  # Substitua pela sua chave API do OpenAI
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+def draw_boxes_celebrity(image_path: str, output_path: str, response: dict):
+    """Desenha caixas ao redor das celebridades e desconhecidos na imagem."""
+    image = Image.open(image_path)
+    draw = ImageDraw.Draw(image)
 
-    prompt = f"A digital painting of {name} in a surreal and colorful art style"
-    data = {
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024"
-    }
+    width, height = image.size
 
-    response = requests.post(dalle_api_url, headers=headers, json=data)
-    
-    if response.status_code == 200:
-        dalle_result = response.json()
-        image_url = dalle_result['data'][0]['url']
-        print(f"Nova imagem gerada: {image_url}")
+    for celeb in response.get("CelebrityFaces", []):
+        # Obtendo as coordenadas do bounding box
+        box = celeb["Face"]["BoundingBox"]
+        left = int(box["Left"] * width)
+        top = int(box["Top"] * height)
+        right = int((box["Left"] + box["Width"]) * width)
+        bottom = int((box["Top"] + box["Height"]) * height)
+
+        # Desenha o bounding box e o nome da celebridade
+        draw.rectangle([left, top, right, bottom], outline="blue", width=3)
+        draw.text((left, top - 10), celeb["Name"], fill="blue")
+
+    for face in response.get("UnrecognizedFaces", []):
+        # Obtendo as coordenadas do bounding box
+        box = face["BoundingBox"]
+        left = int(box["Left"] * width)
+        top = int(box["Top"] * height)
+        right = int((box["Left"] + box["Width"]) * width)
+        bottom = int((box["Top"] + box["Height"]) * height)
+
+        # Desenha o bounding box para rostos desconhecidos
+        draw.rectangle([left, top, right, bottom], outline="red", width=3)
+        draw.text((left, top - 10), "Desconhecido", fill="red")
+
+    image.save(output_path)
+    print(f"Imagem salva com resultados em: {output_path}")
+
+
+if __name__ == "__main__":
+    # Caminhos das imagens
+    input_image_path = get_path("photo01.jpg")  # Nome da imagem de entrada
+    output_image_path = get_path("resultado_celebridades.jpg")  # Nome da imagem de saída
+
+    # Detectar celebridades na imagem
+    response = detect_celebrities(input_image_path)
+
+    # Processa a resposta do AWS Rekognition
+    if response.get("CelebrityFaces") or response.get("UnrecognizedFaces"):
+        print("Análise concluída:")
+        for celeb in response.get("CelebrityFaces", []):
+            print(f"Famoso identificado: {celeb['Name']} - Confiança: {celeb['MatchConfidence']:.2f}%")
+        for face in response.get("UnrecognizedFaces", []):
+            print(f"Rosto não identificado - Confiança: {face['Confidence']:.2f}%")
+
+        # Desenhar as caixas e salvar a imagem processada
+        draw_boxes_celebrity(input_image_path, output_image_path, response)
     else:
-        print(f"Erro ao gerar imagem: {response.json()}")
-else:
-    print("Nenhuma celebridade foi identificada na imagem.")
+        print("Nenhum rosto reconhecido.")
